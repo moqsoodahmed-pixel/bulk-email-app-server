@@ -24,8 +24,10 @@ app.use(helmet());
 app.use(
   cors({
     origin: [
-      process.env.FRONTEND_URL,
+      'https://bulk-email-app-client.pages.dev',
+      'https://d245ddfe.bulk-email-app-client.pages.dev',
       'http://localhost:5173',
+      process.env.FRONTEND_URL,
     ].filter(Boolean),
     credentials: true,
   })
