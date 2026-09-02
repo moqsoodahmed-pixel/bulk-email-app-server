@@ -5,6 +5,7 @@ import {
   listCompanies,
   accountStatus,
   brevoStatus,
+  diagnose,
   listStates,
   blastedStates,
   manualMarkBlasted,
@@ -41,6 +42,7 @@ router.use(requireAuth, requireAdmin);
 router.get('/companies',       listCompanies);
 router.get('/account-status',  accountStatus);
 router.get('/brevo-status',    brevoStatus);
+router.get('/diagnose',        diagnose);
 router.get('/states',          listStates);
 router.get('/blasted-states',  blastedStates);
 router.post('/manual-blast',   manualMarkBlasted);
