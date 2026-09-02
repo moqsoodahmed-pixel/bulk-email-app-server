@@ -254,6 +254,64 @@ function buildFilter(tf = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/campaigns/diagnose?company=launcherdesk
+// ---------------------------------------------------------------------------
+export async function diagnose(req, res) {
+  const key = req.query.company || 'launcherdesk';
+  const cfg = getCfg(key);
+  const keys = cfg.apiKeys();
+  const fromEmail = cfg.fromEmail();
+  const results = [];
+
+  for (let i = 0; i < keys.length; i++) {
+    const apiKey = keys[i];
+    const entry = { account: i + 1, apiKeyOk: false, senderVerified: false, quota: null, errors: [] };
+
+    try {
+      const { ok, body, status } = await brevoReq(apiKey, '/account');
+      if (!ok) {
+        entry.errors.push(`API key invalid: ${status} — ${body.message || JSON.stringify(body)}`);
+      } else {
+        entry.apiKeyOk = true;
+        const plan = (body.plan || []).find((p) => p.credits != null);
+        if (plan) entry.quota = { total: plan.credits, used: plan.creditsUsed || 0, remaining: plan.credits - (plan.creditsUsed || 0) };
+      }
+    } catch (e) {
+      entry.errors.push(`Account check failed: ${e.message}`);
+    }
+
+    if (entry.apiKeyOk) {
+      try {
+        const { ok, body } = await brevoReq(apiKey, '/senders');
+        if (ok) {
+          const senders = body.senders || [];
+          const match = senders.find((s) => s.email?.toLowerCase() === fromEmail.toLowerCase());
+          if (!match) {
+            entry.errors.push(`Sender "${fromEmail}" NOT found in Brevo. Add it at: Brevo → Senders & IPs → Senders → Add a New Sender`);
+          } else if (!match.active) {
+            entry.errors.push(`Sender "${fromEmail}" found but NOT active/verified. Check inbox for Brevo's verification email.`);
+          } else {
+            entry.senderVerified = true;
+          }
+        }
+      } catch (e) {
+        entry.errors.push(`Sender check failed: ${e.message}`);
+      }
+    }
+
+    results.push(entry);
+  }
+
+  const allOk = results.every((r) => r.apiKeyOk && r.senderVerified);
+  res.json({
+    company: key, label: cfg.label, fromEmail,
+    allOk,
+    accounts: results,
+    summary: allOk ? '✅ All OK' : '❌ Issues found — see errors field.',
+  });
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/campaigns/companies
 // ---------------------------------------------------------------------------
 export async function listCompanies(req, res) {
