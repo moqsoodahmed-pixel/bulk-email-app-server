@@ -40,14 +40,31 @@ function getCfg(key) {
 }
 
 // ---------------------------------------------------------------------------
-// Brevo account pool — rotates through keys when quota is hit
+// Brevo account pool — fetches LIVE quota before sending, rotates automatically
 // ---------------------------------------------------------------------------
 class BrevoPool {
-  constructor(apiKeys) {
-    this.accounts = apiKeys.map((key, i) => ({
-      key, index: i + 1, remaining: 300, exhausted: false,
-    }));
+  constructor(accounts) {
+    // accounts = [{ key, index, remaining, exhausted }] — built by BrevoPool.create()
+    this.accounts = accounts;
+    // Start on first non-exhausted account
     this.current = 0;
+    while (this.current < this.accounts.length && this.accounts[this.current].exhausted) {
+      this.current++;
+    }
+  }
+
+  // Factory: fetches live quota for every key so we start with real numbers
+  static async create(apiKeys) {
+    const accounts = await Promise.all(
+      apiKeys.map(async (key, i) => {
+        const quota = await fetchQuota(key);
+        const remaining = quota ? quota.remaining : 300;
+        const exhausted = remaining <= 0;
+        console.log(`[pool] Account ${i + 1}: ${remaining} emails remaining (live from Brevo)`);
+        return { key, index: i + 1, remaining, exhausted };
+      })
+    );
+    return new BrevoPool(accounts);
   }
 
   get totalAccounts() { return this.accounts.length; }
@@ -58,6 +75,11 @@ class BrevoPool {
       this.current++;
     }
     return null; // all exhausted
+  }
+
+  // Returns the first account that has quota — used for one-off sends like testSend
+  firstAvailable() {
+    return this.accounts.find((a) => !a.exhausted && a.remaining > 0) || null;
   }
 
   markSent() {
@@ -76,7 +98,7 @@ class BrevoPool {
   markExhausted() {
     const acc = this.accounts[this.current];
     if (!acc) return;
-    console.log(`[pool] Account ${acc.index} quota hit — switching.`);
+    console.log(`[pool] Account ${acc.index} quota hit by Brevo — switching.`);
     acc.exhausted = true;
     acc.remaining = 0;
     this.current++;
@@ -516,10 +538,20 @@ export async function testSend(req, res) {
   let attachment = null;
   if (req.file) attachment = { filename: req.file.originalname, mimeType: req.file.mimetype, data: req.file.buffer.toString('base64') };
 
+  // Build pool with live quotas so we pick the right account
+  const pool = await BrevoPool.create(keys);
+  const acc  = pool.firstAvailable();
+
+  if (!acc) {
+    return res.status(429).json({
+      error: `All ${keys.length} Brevo account${keys.length > 1 ? 's' : ''} for ${cfg.label} have 0 emails remaining this month. Wait for monthly reset or add more API keys.`,
+    });
+  }
+
   try {
-    const r = await sendViaBrevo({ to: testEmail, toName: 'Test User', subject: subj, htmlBody, fromEmail, fromName: senderName, replyTo: fromEmail, attachment, apiKey: keys[0], companyAddress: cfg.address });
+    const r = await sendViaBrevo({ to: testEmail, toName: 'Test User', subject: subj, htmlBody, fromEmail, fromName: senderName, replyTo: fromEmail, attachment, apiKey: acc.key, companyAddress: cfg.address });
     res.json({
-      message:   `Sent from ${fromEmail} (Account 1 of ${keys.length}) to ${testEmail}.`,
+      message:   `Sent from ${fromEmail} (Account ${acc.index} of ${keys.length}, ${acc.remaining} remaining) to ${testEmail}.`,
       messageId: r && r.messageId ? r.messageId : null,
       tips: [
         'Check Primary inbox first.',
@@ -589,6 +621,7 @@ export async function createAndSendCampaign(req, res) {
     message: `Campaign started. Sending ${total} emails via ${keys.length} Brevo account${keys.length > 1 ? 's' : ''} (capacity: ${keys.length * 300})…`,
   });
 
+  // Pass keys — pool will be built with live quotas inside sendEmails
   sendEmails(campaign, filter, cfg, keys, cfg.address).catch((err) => console.error('[campaign] bg error:', err));
 }
 
@@ -600,8 +633,10 @@ async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress) {
   const fromName   = campaign.fromName || cfg.fromName();
   const attachment = campaign.attachment?.data && campaign.attachment?.filename ? campaign.attachment : null;
 
-  const pool = new BrevoPool(apiKeys);
-  console.log(`[campaign] "${campaign.name}" — ${pool.totalAccounts} account(s), capacity ${pool.totalAccounts * 300}`);
+  // Build pool with LIVE quota from Brevo — skips exhausted accounts automatically
+  const pool = await BrevoPool.create(apiKeys);
+  const totalLiveRemaining = pool.accounts.reduce((s, a) => s + a.remaining, 0);
+  console.log(`[campaign] "${campaign.name}" — ${pool.totalAccounts} account(s), ${totalLiveRemaining} emails actually available (live from Brevo)`);
 
   let sent = 0, failed = 0;
   const BATCH = 50;
