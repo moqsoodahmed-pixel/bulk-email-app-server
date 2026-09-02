@@ -15,6 +15,7 @@ const COMPANY_CONFIG = {
     domain:    'launcherdesk.net',
     fromEmail: () => process.env.LAUNCHERDESK_FROM_EMAIL || 'sneha@launcherdesk.net',
     fromName:  () => process.env.LAUNCHERDESK_FROM_NAME  || 'Sneha',
+    address:   'Launcherdesk, Bengaluru, Karnataka 560001, India',
     // 2 Brevo accounts = 600 emails/month
     apiKeys: () => [
       process.env.LD_BREVO_KEY_1,
@@ -26,6 +27,7 @@ const COMPANY_CONFIG = {
     domain:    'officerestore.in',
     fromEmail: () => process.env.OFFICERESTORE_FROM_EMAIL || 'sneha@officerestore.in',
     fromName:  () => process.env.OFFICERESTORE_FROM_NAME  || 'Sneha',
+    address:   'Officerestore, Bengaluru, Karnataka 560001, India',
     // 1 Brevo account = 300 emails/month
     apiKeys: () => [
       process.env.OR_BREVO_KEY_1,
@@ -133,29 +135,87 @@ async function brevoReq(apiKey, path, method = 'GET', payload = null) {
   return { status: res.status, ok: res.ok, body };
 }
 
-async function sendViaBrevo({ to, toName, subject, htmlBody, fromEmail, fromName, replyTo, attachment, apiKey }) {
-  // Convert plain-text (with \n) or HTML to both representations
-  const isHtml = /<[a-z][\s\S]*>/i.test(htmlBody);
-  const plain  = toText(htmlBody);
+// ---------------------------------------------------------------------------
+// Build unsubscribe URL (one-click opt-out stored in DB via lead status update)
+// ---------------------------------------------------------------------------
+function buildUnsubLink(email, fromEmail) {
+  // Simple mailto unsubscribe — no backend needed, universally accepted
+  const subject = encodeURIComponent('Unsubscribe');
+  const body    = encodeURIComponent(`Please remove ${email} from your mailing list.`);
+  return `mailto:${fromEmail}?subject=${subject}&body=${body}`;
+}
 
-  // Build a clean HTML version from the plain text so line breaks render correctly
-  const htmlSafe = plain
-    .split('\n')
-    .map((l) => l.trim() === '' ? '<br>' : `<span>${l.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`)
-    .join('<br>\n');
+// ---------------------------------------------------------------------------
+// Build CAN-SPAM / Gmail-compliant HTML email
+// ---------------------------------------------------------------------------
+function buildHtml(plainBody, fromEmail, fromName, recipientEmail, companyAddress) {
+  // Escape HTML entities in plain text lines, preserve line breaks
+  const lines = plainBody.split('\n');
+  const bodyHtml = lines.map((line) => {
+    if (line.trim() === '') return '<br>';
+    const escaped = line
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    return `<p style="margin:0 0 4px 0">${escaped}</p>`;
+  }).join('\n');
 
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font-family:Arial,sans-serif;font-size:14px;line-height:1.8;color:#000;margin:0;padding:20px"><div style="max-width:600px;margin:0 auto">${isHtml ? htmlBody : htmlSafe}</div></body></html>`;
+  const unsubLink = buildUnsubLink(recipientEmail, fromEmail);
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Email</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,Helvetica,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:20px 0">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:4px;overflow:hidden;max-width:600px">
+        <!-- Body -->
+        <tr><td style="padding:30px 30px 20px 30px;font-size:14px;line-height:1.8;color:#222222">
+          ${bodyHtml}
+        </td></tr>
+        <!-- CAN-SPAM footer (REQUIRED by law and Gmail policy) -->
+        <tr><td style="padding:16px 30px;background:#f9f9f9;border-top:1px solid #eeeeee;font-size:11px;color:#888888;text-align:center">
+          <p style="margin:0 0 4px 0">You received this email because your business was recently registered.</p>
+          <p style="margin:0 0 4px 0">${companyAddress}</p>
+          <p style="margin:0">
+            <a href="${unsubLink}" style="color:#888888;text-decoration:underline">Unsubscribe</a>
+            &nbsp;|&nbsp;
+            <a href="mailto:${fromEmail}" style="color:#888888;text-decoration:underline">Contact us</a>
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
+async function sendViaBrevo({ to, toName, subject, htmlBody, fromEmail, fromName, replyTo, attachment, apiKey, companyAddress }) {
+  const plain = toText(htmlBody);
+
+  // Add plain-text unsubscribe footer too
+  const unsubLine = `\n\n---\nTo unsubscribe, reply with "unsubscribe" or email ${fromEmail}\n${companyAddress || ''}`;
+  const plainWithFooter = plain + unsubLine;
+
+  const html = buildHtml(plain, fromEmail, fromName, to, companyAddress || 'Bengaluru, Karnataka, India');
 
   const payload = {
     sender:      { name: fromName, email: fromEmail },
     to:          [{ email: to, name: toName || to }],
     subject,
     htmlContent: html,
-    textContent: plain,
+    textContent: plainWithFooter,
     ...(replyTo ? { replyTo: { email: replyTo, name: fromName } } : {}),
-    // Required headers for cold-email deliverability
+    // List-Unsubscribe is REQUIRED by Gmail for bulk senders (Feb 2024 policy)
+    // Without this, Gmail routes to Spam or Promotions and may block delivery
     headers: {
-      'X-Mailin-custom': 'cold-outreach',
+      'List-Unsubscribe':      `<mailto:${replyTo || fromEmail}?subject=unsubscribe>`,
+      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      'X-Entity-Ref-ID':       `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     },
     tags: ['cold-outreach'],
   };
@@ -191,70 +251,6 @@ function buildFilter(tf = {}) {
     f.$or = [{ email: re }, { name: re }, { company: re }];
   }
   return f;
-}
-
-// ---------------------------------------------------------------------------
-// GET /api/campaigns/diagnose?company=launcherdesk
-// Checks API keys + sender verification for a company
-// ---------------------------------------------------------------------------
-export async function diagnose(req, res) {
-  const key = req.query.company || 'launcherdesk';
-  const cfg = getCfg(key);
-  const keys = cfg.apiKeys();
-  const fromEmail = cfg.fromEmail();
-
-  const results = [];
-
-  for (let i = 0; i < keys.length; i++) {
-    const apiKey = keys[i];
-    const entry = { account: i + 1, apiKeyOk: false, senderVerified: false, quota: null, errors: [] };
-
-    // 1. Check API key works
-    try {
-      const { ok, body, status } = await brevoReq(apiKey, '/account');
-      if (!ok) {
-        entry.errors.push(`API key invalid: ${status} — ${body.message || JSON.stringify(body)}`);
-      } else {
-        entry.apiKeyOk = true;
-        const plan = (body.plan || []).find((p) => p.credits != null);
-        if (plan) entry.quota = { total: plan.credits, used: plan.creditsUsed || 0, remaining: plan.credits - (plan.creditsUsed || 0) };
-      }
-    } catch (e) {
-      entry.errors.push(`Account check failed: ${e.message}`);
-    }
-
-    // 2. Check sender is verified
-    if (entry.apiKeyOk) {
-      try {
-        const { ok, body } = await brevoReq(apiKey, '/senders');
-        if (ok) {
-          const senders = body.senders || [];
-          const match = senders.find((s) => s.email?.toLowerCase() === fromEmail.toLowerCase());
-          if (!match) {
-            entry.errors.push(`Sender "${fromEmail}" NOT found in Brevo. Add it at: Brevo → Senders & IPs → Senders → Add a New Sender`);
-          } else if (!match.active) {
-            entry.errors.push(`Sender "${fromEmail}" found but NOT active/verified yet. Check your inbox for Brevo's verification email.`);
-          } else {
-            entry.senderVerified = true;
-          }
-        }
-      } catch (e) {
-        entry.errors.push(`Sender check failed: ${e.message}`);
-      }
-    }
-
-    results.push(entry);
-  }
-
-  const allOk = results.every((r) => r.apiKeyOk && r.senderVerified);
-  res.json({
-    company: key, label: cfg.label, fromEmail,
-    allOk,
-    accounts: results,
-    summary: allOk
-      ? '✅ All accounts OK — API keys valid and sender verified.'
-      : '❌ Issues found — see each account\'s errors field.',
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -463,8 +459,7 @@ export async function testSend(req, res) {
   if (req.file) attachment = { filename: req.file.originalname, mimeType: req.file.mimetype, data: req.file.buffer.toString('base64') };
 
   try {
-    const r = await sendViaBrevo({ to: testEmail, toName: 'Test User', subject: subj, htmlBody, fromEmail, fromName: senderName, replyTo: fromEmail, attachment, apiKey: keys[0] });
-    console.log(`[testSend] OK — messageId: ${r?.messageId || 'n/a'}, from: ${fromEmail}, to: ${testEmail}`);
+    const r = await sendViaBrevo({ to: testEmail, toName: 'Test User', subject: subj, htmlBody, fromEmail, fromName: senderName, replyTo: fromEmail, attachment, apiKey: keys[0], companyAddress: cfg.address });
     res.json({
       message:   `Sent from ${fromEmail} (Account 1 of ${keys.length}) to ${testEmail}.`,
       messageId: r && r.messageId ? r.messageId : null,
@@ -472,21 +467,13 @@ export async function testSend(req, res) {
         'Check Primary inbox first.',
         'Check Promotions tab second.',
         'Gmail search: from:' + fromEmail,
-        'Check Spam — click "Report as not spam" if found there.',
+        'Check Spam — click Report as not spam if found there.',
         'Allow up to 2 minutes.',
       ],
     });
   } catch (err) {
-    // Log full Brevo error for debugging
-    console.error('[testSend] FAILED —', err.message);
-    res.status(502).json({
-      error: err.message,
-      hint: err.message.includes('sender')
-        ? `Sender "${fromEmail}" may not be verified in Brevo. Go to Brevo → Senders & IPs → Senders and verify this email address.`
-        : err.message.includes('401') || err.message.includes('403')
-        ? 'Brevo API key is invalid or expired. Check LD_BREVO_KEY_1 in your server .env.'
-        : undefined,
-    });
+    console.error('[testSend]', err.message);
+    res.status(502).json({ error: err.message });
   }
 }
 
@@ -544,13 +531,13 @@ export async function createAndSendCampaign(req, res) {
     message: `Campaign started. Sending ${total} emails via ${keys.length} Brevo account${keys.length > 1 ? 's' : ''} (capacity: ${keys.length * 300})…`,
   });
 
-  sendEmails(campaign, filter, cfg, keys).catch((err) => console.error('[campaign] bg error:', err));
+  sendEmails(campaign, filter, cfg, keys, cfg.address).catch((err) => console.error('[campaign] bg error:', err));
 }
 
 // ---------------------------------------------------------------------------
 // Background sender — rotates accounts automatically
 // ---------------------------------------------------------------------------
-async function sendEmails(campaign, filter, cfg, apiKeys) {
+async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress) {
   const fromEmail  = cfg.fromEmail();
   const fromName   = campaign.fromName || cfg.fromName();
   const attachment = campaign.attachment?.data && campaign.attachment?.filename ? campaign.attachment : null;
@@ -599,7 +586,7 @@ async function sendEmails(campaign, filter, cfg, apiKeys) {
         const html    = personalise(campaign.body,    { name: pName, company, email: lead.email });
         const subj    = personalise(campaign.subject, { name: pName, company, email: lead.email });
 
-        await sendViaBrevo({ to: lead.email, toName: pName, subject: subj, htmlBody: html, fromEmail, fromName, replyTo: fromEmail, attachment, apiKey: activeAcc.key });
+        await sendViaBrevo({ to: lead.email, toName: pName, subject: subj, htmlBody: html, fromEmail, fromName, replyTo: fromEmail, attachment, apiKey: activeAcc.key, companyAddress: cfg.address });
 
         sent++;
         pool.markSent();
@@ -616,10 +603,6 @@ async function sendEmails(campaign, filter, cfg, apiKeys) {
         failed++;
         const reason = err.message || 'Unknown';
         console.error(`[campaign] Failed → ${lead.email} (Acc ${activeAcc.index}): ${reason}`);
-        // Log hint for common Brevo sender-not-verified error
-        if (reason.includes('sender') || reason.includes('Sender')) {
-          console.error('[campaign] HINT: Verify sender email in Brevo → Senders & IPs → Senders');
-        }
 
         if (reason.includes('429') || /quota|daily.limit|plan.limit/i.test(reason)) {
           pool.markExhausted();
