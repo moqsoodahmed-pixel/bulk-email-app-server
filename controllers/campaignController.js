@@ -677,7 +677,8 @@ async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress, blastL
   console.log(`[campaign] "${campaign.name}" — ${pool.totalAccounts} account(s), ${totalLiveRemaining} emails actually available (live from Brevo)`);
 
   let sent = 0, failed = 0, skipped = 0;
-  const failedRecipients = []; // collected for BlastLog
+  const failedRecipients = [];        // collected for BlastLog resend
+  const successfullySentEmails = [];  // deleted from Lead DB after blast
   const BATCH = 50;
   let skip = 0;
   const id = campaign._id.toString();
@@ -721,6 +722,7 @@ async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress, blastL
         await sendViaBrevo({ to: lead.email, toName: pName, subject: subj, htmlBody: html, fromEmail, fromName, replyTo: fromEmail, attachment, apiKey: activeAcc.key, companyAddress: cfg.address });
 
         sent++;
+        successfullySentEmails.push(lead.email);
         pool.markSent();
 
         if (sent % 10 === 0) {
@@ -780,7 +782,21 @@ async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress, blastL
     });
   }
 
+  // ── Delete successfully sent leads immediately ──────────────────────────
+  // Per product requirement: leads must NOT be stored after a successful blast.
+  // Only failed recipients remain — temporarily in BlastLog for resend,
+  // and are cleared from there once resent or dismissed.
+  if (sent > 0) {
+    const failedEmails = new Set(failedRecipients.map((r) => r.email));
+    const sentEmails   = successfullySentEmails.filter((e) => !failedEmails.has(e));
+    if (sentEmails.length > 0) {
+      const del = await Lead.deleteMany({ email: { $in: sentEmails } });
+      console.log(`[campaign] Deleted ${del.deletedCount} successfully-sent leads from DB.`);
+    }
+  }
+
   console.log(`[campaign] "${campaign.name}" ${stopped ? 'STOPPED' : 'DONE'} — ${pool.summary()}`);
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -838,6 +854,12 @@ export async function resendViaCampaign(blastLog, campaign, pendingRecipients) {
   if (resentFail === 0) {
     await BlastLog.findByIdAndUpdate(blastLog._id, { failedRecipients: [] });
     console.log('[resend] All failures resolved — failedRecipients cleared from log.');
+    // Also delete those leads from the DB — they've now been sent successfully
+    const emails = pendingRecipients.map((r) => r.email);
+    if (emails.length > 0) {
+      const del = await Lead.deleteMany({ email: { $in: emails } });
+      console.log(`[resend] Deleted ${del.deletedCount} resent leads from DB.`);
+    }
   }
 }
 
