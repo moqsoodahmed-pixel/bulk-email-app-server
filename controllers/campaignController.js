@@ -21,6 +21,7 @@ const COMPANY_CONFIG = {
     apiKeys: () => [
       process.env.LD_BREVO_KEY_1,
       process.env.LD_BREVO_KEY_2,
+      process.env.LD_BREVO_KEY_3, // add a 3rd Brevo account → 900 emails/month
     ].filter((k) => k && k.length > 10 && !k.includes('YOUR_')),
   },
   officerestore: {
@@ -219,12 +220,31 @@ function buildHtml(plainBody, fromEmail, fromName, recipientEmail, companyAddres
 
 async function sendViaBrevo({ to, toName, subject, htmlBody, fromEmail, fromName, replyTo, attachment, apiKey, companyAddress }) {
   const plain = toText(htmlBody);
-
-  // Add plain-text unsubscribe footer too
-  const unsubLine = `\n\n---\nTo unsubscribe, reply with "unsubscribe" or email ${fromEmail}\n${companyAddress || ''}`;
+  const unsubLine = `\n\n---\nTo unsubscribe reply with "unsubscribe" or email ${fromEmail}\n${companyAddress || ''}`;
   const plainWithFooter = plain + unsubLine;
 
-  const html = buildHtml(plain, fromEmail, fromName, to, companyAddress || 'Bengaluru, Karnataka, India');
+  // Plain-text style HTML — no background colours, no banners, no large headers.
+  // These are the signals Gmail uses to route into Promotions. Minimal HTML = Primary inbox.
+  const lines = plain.split('\n');
+  const bodyHtml = lines.map((line) => {
+    if (line.trim() === '') return '<br>';
+    const escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return `<p style="margin:0 0 6px 0;padding:0">${escaped}</p>`;
+  }).join('\n');
+  const unsubUrl = `mailto:${replyTo || fromEmail}?subject=unsubscribe`;
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#ffffff;font-family:Arial,Helvetica,sans-serif;color:#222222">
+<div style="max-width:600px;margin:0 auto;padding:24px 20px">
+  <div style="font-size:14px;line-height:1.8;color:#222222">${bodyHtml}</div>
+  <div style="margin-top:32px;padding-top:16px;border-top:1px solid #eeeeee;font-size:11px;color:#999999">
+    ${companyAddress || ''}<br>
+    <a href="${unsubUrl}" style="color:#999999;text-decoration:underline">Unsubscribe</a>
+  </div>
+</div>
+</body>
+</html>`;
 
   const payload = {
     sender:      { name: fromName, email: fromEmail },
@@ -233,14 +253,12 @@ async function sendViaBrevo({ to, toName, subject, htmlBody, fromEmail, fromName
     htmlContent: html,
     textContent: plainWithFooter,
     ...(replyTo ? { replyTo: { email: replyTo, name: fromName } } : {}),
-    // List-Unsubscribe is REQUIRED by Gmail for bulk senders (Feb 2024 policy)
-    // Without this, Gmail routes to Spam or Promotions and may block delivery
     headers: {
       'List-Unsubscribe':      `<mailto:${replyTo || fromEmail}?subject=unsubscribe>`,
       'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
       'X-Entity-Ref-ID':       `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     },
-    tags: ['cold-outreach'],
+    // No tags or category — avoids Brevo marking as 'marketing' which triggers Gmail Promotions
   };
 
   if (attachment && attachment.data && attachment.filename) {
@@ -619,7 +637,14 @@ export async function createAndSendCampaign(req, res) {
 
   // Create a BlastLog entry — shared across all admins
   const blastLog = await BlastLog.create({
-    triggeredBy:   { userId: req.user.id, userEmail: req.user.email, userName: req.user.name || req.user.email },
+    triggeredBy:   {
+      userId:    req.user.id,
+      userEmail: req.user.email,
+      // Always show name — fall back to email-prefix only if name missing
+      userName:  req.user.name && req.user.name.trim()
+        ? req.user.name.trim()
+        : req.user.email.split('@')[0],
+    },
     campaignId:    campaign._id,
     campaignName:  campaign.name,
     company:       co,
