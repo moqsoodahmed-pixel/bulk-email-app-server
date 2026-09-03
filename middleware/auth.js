@@ -10,7 +10,8 @@ export function requireAuth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = { id: payload.sub, email: payload.email, role: payload.role };
+    // payload.name added in authController v2 — falls back gracefully for old tokens
+    req.user = { id: payload.sub, email: payload.email, role: payload.role, name: payload.name || '' };
     return next();
   } catch (err) {
     return res.status(401).json({ error: 'Invalid or expired token' });

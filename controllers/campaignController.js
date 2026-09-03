@@ -614,7 +614,7 @@ export async function createAndSendCampaign(req, res) {
     attachment,
     stats:        { total, sent: 0, failed: 0 },
     status:       'sending',
-    createdBy:    req.user?._id || null,
+    createdBy:    req.user?.id || null,
   });
 
   // Create a BlastLog entry — shared across all admins
