@@ -1,5 +1,6 @@
-import Lead from '../models/Lead.js';
-import Campaign from '../models/Campaign.js';
+import Lead     from '../models/Lead.js';
+import Campaign  from '../models/Campaign.js';
+import BlastLog  from '../models/BlastLog.js';
 
 // ---------------------------------------------------------------------------
 // Stop-signal map
@@ -616,19 +617,31 @@ export async function createAndSendCampaign(req, res) {
     createdBy:    req.user?._id || null,
   });
 
+  // Create a BlastLog entry — shared across all admins
+  const blastLog = await BlastLog.create({
+    triggeredBy:   { userId: req.user.id, userEmail: req.user.email, userName: req.user.name || req.user.email },
+    campaignId:    campaign._id,
+    campaignName:  campaign.name,
+    company:       co,
+    subject:       campaign.subject,
+    startedAt:     new Date(),
+    totalTargeted: total,
+    blastStatus:   'running',
+  });
+
   res.status(201).json({
     campaign,
     message: `Campaign started. Sending ${total} emails via ${keys.length} Brevo account${keys.length > 1 ? 's' : ''} (capacity: ${keys.length * 300})…`,
   });
 
   // Pass keys — pool will be built with live quotas inside sendEmails
-  sendEmails(campaign, filter, cfg, keys, cfg.address).catch((err) => console.error('[campaign] bg error:', err));
+  sendEmails(campaign, filter, cfg, keys, cfg.address, blastLog).catch((err) => console.error('[campaign] bg error:', err));
 }
 
 // ---------------------------------------------------------------------------
 // Background sender — rotates accounts automatically
 // ---------------------------------------------------------------------------
-async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress) {
+async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress, blastLog) {
   const fromEmail  = cfg.fromEmail();
   const fromName   = campaign.fromName || cfg.fromName();
   const attachment = campaign.attachment?.data && campaign.attachment?.filename ? campaign.attachment : null;
@@ -638,7 +651,8 @@ async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress) {
   const totalLiveRemaining = pool.accounts.reduce((s, a) => s + a.remaining, 0);
   console.log(`[campaign] "${campaign.name}" — ${pool.totalAccounts} account(s), ${totalLiveRemaining} emails actually available (live from Brevo)`);
 
-  let sent = 0, failed = 0;
+  let sent = 0, failed = 0, skipped = 0;
+  const failedRecipients = []; // collected for BlastLog
   const BATCH = 50;
   let skip = 0;
   const id = campaign._id.toString();
@@ -668,7 +682,7 @@ async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress) {
       if (!activeAcc) break;
 
       if (!lead.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lead.email)) {
-        failed++;
+        skipped++;
         console.warn(`[campaign] Skipped invalid email: "${lead.email}"`);
         continue;
       }
@@ -695,7 +709,17 @@ async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress) {
       } catch (err) {
         failed++;
         const reason = err.message || 'Unknown';
+        const pName  = lead.name || lead.firstName || lead.email.split('@')[0];
         console.error(`[campaign] Failed → ${lead.email} (Acc ${activeAcc.index}): ${reason}`);
+
+        // Collect for resend section
+        failedRecipients.push({
+          email:       lead.email,
+          name:        pName,
+          company:     lead.company || '',
+          reason,
+          retryStatus: 'pending',
+        });
 
         if (reason.includes('429') || /quota|daily.limit|plan.limit/i.test(reason)) {
           pool.markExhausted();
@@ -710,13 +734,86 @@ async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress) {
   const stopped = stopSignals.get(id) === true;
   stopSignals.delete(id);
 
+  const finalStatus = stopped ? 'stopped' : (sent === 0 ? 'failed' : 'sent');
+
   await Campaign.findByIdAndUpdate(campaign._id, {
-    status:         stopped ? 'stopped' : (sent === 0 ? 'failed' : 'sent'),
+    status:         finalStatus,
     sentAt:         new Date(),
     'stats.sent':   sent,
     'stats.failed': failed,
   });
+
+  // Update BlastLog — store failed recipients temporarily for resend
+  if (blastLog) {
+    await BlastLog.findByIdAndUpdate(blastLog._id, {
+      completedAt:      new Date(),
+      totalSent:        sent,
+      totalFailed:      failed,
+      totalSkipped:     skipped,
+      blastStatus:      stopped ? 'stopped' : (sent === 0 ? 'failed' : 'completed'),
+      failedRecipients: failedRecipients,
+    });
+  }
+
   console.log(`[campaign] "${campaign.name}" ${stopped ? 'STOPPED' : 'DONE'} — ${pool.summary()}`);
+}
+
+// ---------------------------------------------------------------------------
+// Resend failed recipients from a BlastLog — called by logController
+// Clears failedRecipients from the log once all succeed.
+// ---------------------------------------------------------------------------
+export async function resendViaCampaign(blastLog, campaign, pendingRecipients) {
+  const co  = campaign.company || 'launcherdesk';
+  const cfg = COMPANY_CONFIG[co] || COMPANY_CONFIG.launcherdesk;
+  const keys = cfg.apiKeys();
+  if (keys.length === 0) {
+    console.error('[resend] No Brevo keys for', co);
+    return;
+  }
+
+  const pool       = await BrevoPool.create(keys);
+  const fromEmail  = cfg.fromEmail();
+  const fromName   = campaign.fromName || cfg.fromName();
+  const attachment = campaign.attachment?.data && campaign.attachment?.filename ? campaign.attachment : null;
+
+  let resentOk = 0, resentFail = 0;
+
+  for (const recipient of pendingRecipients) {
+    const acc = pool.firstAvailable();
+    if (!acc) { console.log('[resend] All accounts exhausted.'); break; }
+
+    try {
+      const pName   = recipient.name || recipient.email.split('@')[0];
+      const company = recipient.company || '';
+      const html    = personalise(campaign.body,    { name: pName, company, email: recipient.email });
+      const subj    = personalise(campaign.subject, { name: pName, company, email: recipient.email });
+
+      await sendViaBrevo({ to: recipient.email, toName: pName, subject: subj, htmlBody: html, fromEmail, fromName, replyTo: fromEmail, attachment, apiKey: acc.key, companyAddress: cfg.address });
+
+      // Mark this recipient as successfully retried
+      await BlastLog.updateOne(
+        { _id: blastLog._id, 'failedRecipients.email': recipient.email },
+        { $set: { 'failedRecipients.$.retryStatus': 'success', 'failedRecipients.$.retriedAt': new Date() } }
+      );
+      resentOk++;
+      await sleep(1500);
+    } catch (err) {
+      console.error(`[resend] Failed again → ${recipient.email}: ${err.message}`);
+      await BlastLog.updateOne(
+        { _id: blastLog._id, 'failedRecipients.email': recipient.email },
+        { $set: { 'failedRecipients.$.retryStatus': 'failed', 'failedRecipients.$.retriedAt': new Date() } }
+      );
+      resentFail++;
+    }
+  }
+
+  console.log(`[resend] Done — ${resentOk} succeeded, ${resentFail} still failed`);
+
+  // If all retried successfully, clear failedRecipients entirely (no permanent storage)
+  if (resentFail === 0) {
+    await BlastLog.findByIdAndUpdate(blastLog._id, { failedRecipients: [] });
+    console.log('[resend] All failures resolved — failedRecipients cleared from log.');
+  }
 }
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }

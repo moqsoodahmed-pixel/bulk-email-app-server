@@ -6,9 +6,10 @@ import { connectDB } from './config/db.js';
 import { apiLimiter } from './middleware/rateLimiters.js';
 import { notFound, errorHandler } from './middleware/errorHandler.js';
 
-import authRoutes from './routes/authRoutes.js';
-import leadRoutes from './routes/leadRoutes.js';
-import campaignRoutes from './routes/campaignRoutes.js'; // ← Phase 4
+import authRoutes    from './routes/authRoutes.js';
+import leadRoutes    from './routes/leadRoutes.js';
+import campaignRoutes from './routes/campaignRoutes.js';
+import logRoutes     from './routes/logRoutes.js';
 
 const REQUIRED_ENV = ['MONGO_URI', 'JWT_SECRET'];
 for (const key of REQUIRED_ENV) {
@@ -38,9 +39,10 @@ app.use('/api', apiLimiter);
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 
-app.use('/api/auth', authRoutes);
-app.use('/api/leads', leadRoutes);
-app.use('/api/campaigns', campaignRoutes); // ← Phase 4
+app.use('/api/auth',      authRoutes);
+app.use('/api/leads',     leadRoutes);
+app.use('/api/campaigns', campaignRoutes);
+app.use('/api/logs',      logRoutes);
 
 app.use(notFound);
 app.use(errorHandler);
