@@ -1,19 +1,21 @@
 import mongoose from 'mongoose';
-import bcrypt from 'bcrypt';
+import bcrypt   from 'bcrypt';
 
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
-    // username — used for login and shown in blast logs instead of email
+
+    // username — optional for backward compat with existing DB users
+    // auto-derived on registration if not provided
     username: {
       type:      String,
-      required:  true,
       unique:    true,
+      sparse:    true,   // allows null/undefined for old users without breaking uniqueness
       lowercase: true,
       trim:      true,
       index:     true,
-      // auto-derived from name if not provided (set in pre-save hook below)
     },
+
     email: {
       type:      String,
       required:  true,
@@ -22,28 +24,25 @@ const userSchema = new mongoose.Schema(
       trim:      true,
       index:     true,
     },
+
     passwordHash: { type: String, required: true },
-    role:         { type: String, enum: ['user'], default: 'user' },
+    role:         { type: String, enum: ['user', 'admin'], default: 'user' },
     lastLoginAt:  { type: Date },
   },
   { timestamps: true }
 );
 
-// Never allow accidental plaintext storage — this is the only write path.
-userSchema.methods.setPassword = async function setPassword(plainPassword) {
-  this.passwordHash = await bcrypt.hash(plainPassword, 12);
+userSchema.methods.setPassword = async function (plain) {
+  this.passwordHash = await bcrypt.hash(plain, 12);
 };
 
-userSchema.methods.comparePassword = function comparePassword(plainPassword) {
-  return bcrypt.compare(plainPassword, this.passwordHash);
+userSchema.methods.comparePassword = function (plain) {
+  return bcrypt.compare(plain, this.passwordHash);
 };
 
-// Defense in depth: strip passwordHash from every JSON response.
+// Strip passwordHash from every JSON response — never expose it
 userSchema.set('toJSON', {
-  transform: (_doc, ret) => {
-    delete ret.passwordHash;
-    return ret;
-  },
+  transform: (_doc, ret) => { delete ret.passwordHash; return ret; },
 });
 
 export default mongoose.model('User', userSchema);

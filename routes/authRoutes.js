@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   login,
+  register,
   me,
   seedAdmin,
   listUsers,
@@ -13,17 +14,18 @@ import { loginLimiter } from '../middleware/rateLimiters.js';
 
 const router = Router();
 
-// Public
-router.post('/login',      loginLimiter, login);
-router.post('/seed-admin', loginLimiter, seedAdmin);
+// Public endpoints
+router.post('/login',       loginLimiter, login);
+router.post('/register',    loginLimiter, register);   // self-registration
+router.post('/seed-admin',  loginLimiter, seedAdmin);  // backward compat → same as register
 
-// Authenticated — any logged-in admin
+// Authenticated
 router.get('/me', requireAuth, me);
 
-// User management — admin only
-router.get('/users',                   requireAuth, requireAdmin, listUsers);
-router.post('/users',                  requireAuth, requireAdmin, createUser);
-router.delete('/users/:id',            requireAuth, requireAdmin, deleteUser);
-router.patch('/users/:id/password',    requireAuth, requireAdmin, changePassword);
+// User management (any logged-in user)
+router.get('/users',                requireAuth, requireAdmin, listUsers);
+router.post('/users',               requireAuth, requireAdmin, createUser);
+router.delete('/users/:id',         requireAuth, requireAdmin, deleteUser);
+router.patch('/users/:id/password', requireAuth, requireAdmin, changePassword);
 
 export default router;
