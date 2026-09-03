@@ -797,7 +797,6 @@ async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress, blastL
 
   console.log(`[campaign] "${campaign.name}" ${stopped ? 'STOPPED' : 'DONE'} — ${pool.summary()}`);
 }
-}
 
 // ---------------------------------------------------------------------------
 // Resend failed recipients from a BlastLog — called by logController
