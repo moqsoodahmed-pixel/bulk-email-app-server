@@ -45,7 +45,7 @@ export async function me(req, res) {
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/auth/users  — list all admin users (no passwords ever returned)
+// GET /api/auth/users  — list all users (no passwords ever returned)
 // ---------------------------------------------------------------------------
 export async function listUsers(req, res) {
   const users = await User.find()
@@ -56,7 +56,7 @@ export async function listUsers(req, res) {
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/auth/users  — create a new admin user
+// POST /api/auth/users  — create a new user
 // Password is bcrypt-hashed (12 rounds) and stored only in MongoDB.
 // Never stored in logs, env vars, or anywhere else.
 // ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ export async function createUser(req, res) {
     return res.status(409).json({ error: 'A user with that email already exists.' });
   }
 
-  const user = new User({ name: name.trim(), email: email.toLowerCase().trim(), role: 'admin' });
+  const user = new User({ name: name.trim(), email: email.toLowerCase().trim(), role: 'user' });
   await user.setPassword(password); // bcrypt hash, 12 rounds — only write path
   await user.save();
 
@@ -101,7 +101,7 @@ export async function deleteUser(req, res) {
 
 // ---------------------------------------------------------------------------
 // PATCH /api/auth/users/:id/password  — change a user's password
-// Only admins can do this. Stored as bcrypt hash, never plain text.
+// Any logged-in user can do this. Stored as bcrypt hash, never plain text.
 // ---------------------------------------------------------------------------
 export async function changePassword(req, res) {
   const { password } = req.body;
@@ -119,13 +119,13 @@ export async function changePassword(req, res) {
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/auth/seed-admin
+// POST /api/auth/seed-user
 // One-time bootstrap — disabled once any user exists.
 // ---------------------------------------------------------------------------
 export async function seedAdmin(req, res) {
   const existing = await User.countDocuments();
   if (existing > 0) {
-    return res.status(403).json({ error: 'Admin already exists. Seeding is disabled.' });
+    return res.status(403).json({ error: 'A user already exists. Seeding is disabled.' });
   }
 
   const { name, email, password } = req.body;
@@ -135,7 +135,7 @@ export async function seedAdmin(req, res) {
       .json({ error: 'name, email, and password (min 10 chars) are required' });
   }
 
-  const user = new User({ name, email: email.toLowerCase().trim(), role: 'admin' });
+  const user = new User({ name, email: email.toLowerCase().trim(), role: 'user' });
   await user.setPassword(password);
   await user.save();
 

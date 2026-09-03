@@ -10,7 +10,6 @@ export function requireAuth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    // payload.name added in authController v2 — falls back gracefully for old tokens
     req.user = { id: payload.sub, email: payload.email, role: payload.role, name: payload.name || '' };
     return next();
   } catch (err) {
@@ -18,9 +17,6 @@ export function requireAuth(req, res, next) {
   }
 }
 
-export function requireAdmin(req, res, next) {
-  if (req.user?.role !== 'admin') {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-  return next();
-}
+// All logged-in users have equal access — no role distinction.
+// Kept as an alias for requireAuth so no route files need changing.
+export const requireAdmin = requireAuth;
