@@ -3,36 +3,54 @@ import User from '../models/User.js';
 
 function signToken(user) {
   return jwt.sign(
-    { sub: user._id.toString(), email: user.email, role: user.role, name: user.name },
+    { sub: user._id.toString(), email: user.email, role: user.role, name: user.name, username: user.username },
     process.env.JWT_SECRET,
     { expiresIn: '12h' }
   );
 }
 
+// Build a unique username from a display name (e.g. "Sneha Sharma" → "sneha_sharma")
+function buildUsername(name, suffix = '') {
+  const base = name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 20);
+  return suffix ? `${base}_${suffix}` : base;
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/auth/login
+// Accepts email OR username in the identifier field.
 // ---------------------------------------------------------------------------
 export async function login(req, res) {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
+  const { identifier, email, password } = req.body;
+  // Support both: { identifier, password } and legacy { email, password }
+  const raw = (identifier || email || '').toLowerCase().trim();
+  if (!raw || !password) {
+    return res.status(400).json({ error: 'Username/email and password are required.' });
   }
 
-  const user = await User.findOne({ email: email.toLowerCase().trim() });
+  // Try email first, then username
+  const isEmail = raw.includes('@');
+  const user    = isEmail
+    ? await User.findOne({ email: raw })
+    : await User.findOne({ username: raw });
+
   if (!user) {
-    return res.status(401).json({ error: 'Invalid credentials' });
+    return res.status(401).json({ error: 'Invalid credentials.' });
   }
 
   const valid = await user.comparePassword(password);
   if (!valid) {
-    return res.status(401).json({ error: 'Invalid credentials' });
+    return res.status(401).json({ error: 'Invalid credentials.' });
   }
 
   user.lastLoginAt = new Date();
   await user.save();
 
-  const token = signToken(user);
-  res.json({ token, user: user.toJSON() });
+  res.json({ token: signToken(user), user: user.toJSON() });
 }
 
 // ---------------------------------------------------------------------------
@@ -40,12 +58,12 @@ export async function login(req, res) {
 // ---------------------------------------------------------------------------
 export async function me(req, res) {
   const user = await User.findById(req.user.id);
-  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!user) return res.status(404).json({ error: 'User not found.' });
   res.json({ user: user.toJSON() });
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/auth/users  — list all users (no passwords ever returned)
+// GET /api/auth/users — list all users (no passwords returned)
 // ---------------------------------------------------------------------------
 export async function listUsers(req, res) {
   const users = await User.find()
@@ -56,12 +74,11 @@ export async function listUsers(req, res) {
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/auth/users  — create a new user
-// Password is bcrypt-hashed (12 rounds) and stored only in MongoDB.
-// Never stored in logs, env vars, or anywhere else.
+// POST /api/auth/users — create a new user
+// Auto-generates a unique username from their name if not supplied.
 // ---------------------------------------------------------------------------
 export async function createUser(req, res) {
-  const { name, email, password } = req.body;
+  const { name, email, password, username: rawUsername } = req.body;
 
   if (!name || !email || !password) {
     return res.status(400).json({ error: 'name, email, and password are required.' });
@@ -73,72 +90,77 @@ export async function createUser(req, res) {
     return res.status(400).json({ error: 'Invalid email address.' });
   }
 
-  const existing = await User.findOne({ email: email.toLowerCase().trim() });
-  if (existing) {
+  if (await User.findOne({ email: email.toLowerCase().trim() })) {
     return res.status(409).json({ error: 'A user with that email already exists.' });
   }
 
-  const user = new User({ name: name.trim(), email: email.toLowerCase().trim(), role: 'user' });
-  await user.setPassword(password); // bcrypt hash, 12 rounds — only write path
+  // Build unique username
+  let username = rawUsername
+    ? rawUsername.toLowerCase().trim().replace(/[^a-z0-9_]/g, '_')
+    : buildUsername(name);
+
+  // Ensure uniqueness — append random suffix if taken
+  let attempt = 0;
+  while (await User.findOne({ username })) {
+    attempt++;
+    username = buildUsername(name, attempt);
+  }
+
+  const user = new User({ name: name.trim(), email: email.toLowerCase().trim(), username, role: 'user' });
+  await user.setPassword(password);
   await user.save();
 
-  res.status(201).json({ user: user.toJSON(), message: `User ${email} created successfully.` });
+  res.status(201).json({ user: user.toJSON(), message: `User @${username} created successfully.` });
 }
 
 // ---------------------------------------------------------------------------
-// DELETE /api/auth/users/:id  — delete a user (cannot delete yourself)
+// DELETE /api/auth/users/:id — delete a user (cannot delete yourself)
 // ---------------------------------------------------------------------------
 export async function deleteUser(req, res) {
   if (req.params.id === req.user.id) {
     return res.status(400).json({ error: 'You cannot delete your own account.' });
   }
-
   const user = await User.findByIdAndDelete(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found.' });
-
-  res.json({ message: `User ${user.email} deleted.` });
+  res.json({ message: `User @${user.username} deleted.` });
 }
 
 // ---------------------------------------------------------------------------
-// PATCH /api/auth/users/:id/password  — change a user's password
-// Any logged-in user can do this. Stored as bcrypt hash, never plain text.
+// PATCH /api/auth/users/:id/password — change password
 // ---------------------------------------------------------------------------
 export async function changePassword(req, res) {
   const { password } = req.body;
   if (!password || password.length < 8) {
     return res.status(400).json({ error: 'New password must be at least 8 characters.' });
   }
-
   const user = await User.findById(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found.' });
-
   await user.setPassword(password);
   await user.save();
-
-  res.json({ message: `Password updated for ${user.email}.` });
+  res.json({ message: `Password updated for @${user.username}.` });
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/auth/seed-user
-// One-time bootstrap — disabled once any user exists.
+// POST /api/auth/seed-admin — first-time setup (open to anyone when 0 users exist)
 // ---------------------------------------------------------------------------
 export async function seedAdmin(req, res) {
-  const existing = await User.countDocuments();
-  if (existing > 0) {
+  const count = await User.countDocuments();
+  if (count > 0) {
     return res.status(403).json({ error: 'A user already exists. Seeding is disabled.' });
   }
 
-  const { name, email, password } = req.body;
-  if (!name || !email || !password || password.length < 10) {
-    return res
-      .status(400)
-      .json({ error: 'name, email, and password (min 10 chars) are required' });
+  const { name, email, password, username: rawUsername } = req.body;
+  if (!name || !email || !password || password.length < 8) {
+    return res.status(400).json({ error: 'name, email, and password (min 8 chars) are required.' });
   }
 
-  const user = new User({ name, email: email.toLowerCase().trim(), role: 'user' });
+  const username = rawUsername
+    ? rawUsername.toLowerCase().trim().replace(/[^a-z0-9_]/g, '_')
+    : buildUsername(name);
+
+  const user = new User({ name: name.trim(), email: email.toLowerCase().trim(), username, role: 'user' });
   await user.setPassword(password);
   await user.save();
 
-  const token = signToken(user);
-  res.status(201).json({ token, user: user.toJSON() });
+  res.status(201).json({ token: signToken(user), user: user.toJSON() });
 }

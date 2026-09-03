@@ -635,15 +635,17 @@ export async function createAndSendCampaign(req, res) {
     createdBy:    req.user?.id || null,
   });
 
-  // Create a BlastLog entry — shared across all admins
+  // Create a BlastLog entry — shared across all users
   const blastLog = await BlastLog.create({
     triggeredBy:   {
       userId:    req.user.id,
       userEmail: req.user.email,
-      // Always show name — fall back to email-prefix only if name missing
-      userName:  req.user.name && req.user.name.trim()
-        ? req.user.name.trim()
-        : req.user.email.split('@')[0],
+      // Show @username first, then name, then email-prefix as last resort
+      userName:  req.user.username && req.user.username.trim()
+        ? `@${req.user.username.trim()}`
+        : req.user.name && req.user.name.trim()
+          ? req.user.name.trim()
+          : req.user.email.split('@')[0],
     },
     campaignId:    campaign._id,
     campaignName:  campaign.name,
