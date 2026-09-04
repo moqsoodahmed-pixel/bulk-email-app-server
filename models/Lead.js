@@ -28,10 +28,14 @@ const leadSchema = new mongoose.Schema(
     tags: { type: [String], default: [] },
     status: {
       type: String,
-      enum: ['active', 'unsubscribed', 'bounced'],
+      // not_sent = blast attempted but delivery failed; kept for retry
+      enum: ['active', 'unsubscribed', 'bounced', 'not_sent'],
       default: 'active',
       index: true,
     },
+    // Why the last blast failed for this lead (only set when status = not_sent)
+    lastBlastError: { type: String, default: '' },
+    lastBlastAt:    { type: Date },
     importBatch: { type: String, default: '' },
     lastContactedAt: { type: Date },
   },

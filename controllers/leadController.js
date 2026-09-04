@@ -370,7 +370,7 @@ export async function getLeads(req, res) {
   const status = req.query.status || '';
 
   const filter = {};
-  if (status && ['active', 'unsubscribed', 'bounced'].includes(status)) {
+  if (status && ['active', 'unsubscribed', 'bounced', 'not_sent'].includes(status)) {
     filter.status = status;
   }
   if (search) {

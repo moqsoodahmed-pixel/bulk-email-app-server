@@ -66,19 +66,17 @@ class BrevoPool {
         const remaining = quota ? quota.remaining : 300;
         const quotaOk   = remaining > 0;
 
-        // Warn if sender not verified — but do NOT mark exhausted.
-        // Brevo rejects the send with a 4xx if the sender is truly missing;
-        // that error surfaces in the catch block. Blocking here caused all
-        // accounts to appear exhausted even when quota was available.
+        // Check sender verification if fromEmail provided
+        let senderOk = true;
         if (fromEmail) {
-          const senderOk = await checkSenderVerified(key, fromEmail);
+          senderOk = await checkSenderVerified(key, fromEmail);
           if (!senderOk) {
-            console.warn(`[pool] Account ${i + 1}: sender "${fromEmail}" not found in sender list — will attempt anyway; Brevo will reject if truly unverified.`);
+            console.warn(`[pool] Account ${i + 1}: sender "${fromEmail}" NOT verified — skipping this account to prevent brevosend.com fallback`);
           }
         }
 
-        const exhausted = !quotaOk; // only quota determines availability
-        console.log(`[pool] Account ${i + 1}: ${remaining} remaining → ${exhausted ? 'SKIPPED (no quota)' : 'OK'}`);
+        const exhausted = !quotaOk || !senderOk;
+        console.log(`[pool] Account ${i + 1}: ${remaining} remaining, sender verified: ${senderOk} → ${exhausted ? 'SKIPPED' : 'OK'}`);
         return { key, index: i + 1, remaining, exhausted };
       })
     );
@@ -131,10 +129,6 @@ class BrevoPool {
 
 // ---------------------------------------------------------------------------
 // Fetch live quota for a Brevo key
-// FIX-QUOTA: Free/Starter Brevo accounts have plan[].credits = null.
-// The old code returned null → BrevoPool used `quota ? quota.remaining : 300`
-// but then `quotaOk = remaining > 0` → false → exhausted = true even with
-// a perfectly valid key. Now we fall back to 300 so the account is usable.
 // ---------------------------------------------------------------------------
 async function fetchQuota(apiKey) {
   try {
@@ -142,29 +136,11 @@ async function fetchQuota(apiKey) {
       headers: { 'api-key': apiKey, 'Content-Type': 'application/json' },
     });
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      console.warn(`[fetchQuota] Brevo /account responded ${res.status}:`, body.message || body);
-      return null; // key is genuinely invalid
-    }
-
-    // Paid plans expose credits here
+    if (!res.ok) return null;
     const plan = (body.plan || []).find((p) => p.credits != null);
-    if (plan) {
-      const used      = plan.creditsUsed || 0;
-      const remaining = plan.credits - used;
-      return { total: plan.credits, used, remaining };
-    }
-
-    // Free / Starter plan — no credits field exposed by Brevo API.
-    // Key IS valid (we got 200). Assume the standard 300/month free cap.
-    // The pool will decrement remaining as emails are sent, and markExhausted()
-    // will catch a real 429 from Brevo if we overshoot.
-    console.log('[fetchQuota] Free-tier key — credits not exposed by Brevo, assuming 300 remaining.');
-    return { total: 300, used: 0, remaining: 300 };
-  } catch (err) {
-    console.error('[fetchQuota] Network error:', err.message);
+    if (plan) return { total: plan.credits, used: plan.creditsUsed || 0, remaining: plan.credits - (plan.creditsUsed || 0) };
     return null;
-  }
+  } catch { return null; }
 }
 
 // Checks that fromEmail is an active verified sender in this Brevo account.
@@ -271,54 +247,47 @@ function buildHtml(plainBody, fromEmail, fromName, recipientEmail, companyAddres
 </html>`;
 }
 
-async function sendViaBrevo({ to, toName, subject, htmlBody, fromEmail, fromName, replyTo, attachment, apiKey, companyAddress }) {
+async function sendViaBrevo({ to, toName, subject, htmlBody, fromEmail, fromName, replyTo, attachment, apiKey, companyAddress, campaignTag }) {
   const plain = toText(htmlBody);
+  const unsubLine = `\n\n---\nTo unsubscribe reply with "unsubscribe" or email ${fromEmail}\n${companyAddress || ''}`;
+  const plainWithFooter = plain + unsubLine;
 
-  // ─── PRIMARY INBOX STRATEGY ──────────────────────────────────────────────
-  // Gmail routes to Promotions when it sees ANY of:
-  //   • List-Unsubscribe header (strongest signal — marks as bulk)
-  //   • List-Unsubscribe-Post header
-  //   • Styled HTML with tables / containers / background colours
-  //   • Unsubscribe link text in the body
-  //   • Large images or tracked links
-  //   • Brevo's default footer (injected when you set tags/category)
-  //
-  // Strategy: send as a plain personal email — no bulk headers, no footer,
-  // minimal inline HTML only (enough to preserve line breaks). This is
-  // indistinguishable from a human typing in Gmail.
-  // ─────────────────────────────────────────────────────────────────────────
-
+  // Render as a plain personal email — no containers, no styling, no borders.
+  // Looks identical to what a person would type in Gmail. This is the #1 signal for Primary inbox.
   const lines = plain.split('\n');
   const bodyHtml = lines.map((line) => {
     if (line.trim() === '') return '<br>';
-    // Escape HTML entities so the text is safe, then wrap in a plain <p>
-    const escaped = line
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-    return `<p style="margin:0 0 8px 0;font-family:Arial,sans-serif;font-size:14px;line-height:1.7;color:#000">${escaped}</p>`;
+    const escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return `<p style="margin:0 0 8px 0">${escaped}</p>`;
   }).join('\n');
-
-  // Minimal HTML — no wrapper table, no background, no footer.
-  // Gmail reads this exactly like a personally typed email.
+  const unsubUrl = `mailto:${replyTo || fromEmail}?subject=Unsubscribe&body=Please remove me from your list`;
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0">
+<body style="margin:0;padding:16px;font-family:Arial,sans-serif;font-size:14px;line-height:1.7;color:#000000">
 ${bodyHtml}
+<p style="margin:24px 0 0 0;font-size:11px;color:#999999">
+  ${companyAddress || ''} &nbsp;|&nbsp;
+  <a href="${unsubUrl}" style="color:#999999">Unsubscribe</a>
+</p>
 </body>
 </html>`;
 
   const payload = {
-    sender:  { name: fromName, email: fromEmail },
-    to:      [{ email: to, name: toName || to }],
+    sender:      { name: fromName, email: fromEmail },
+    to:          [{ email: to, name: toName || to }],
     subject,
     htmlContent: html,
-    textContent: plain,           // plain text = exact body, no footer
+    textContent: plainWithFooter,
     ...(replyTo ? { replyTo: { email: replyTo, name: fromName } } : {}),
-    // NO headers block — List-Unsubscribe alone is enough to trigger Promotions.
-    // NO tags / category — Brevo injects its own marketing footer when these are set.
-    // X-Entity-Ref-ID is fine and helps deduplication, but not worth the risk here.
+    headers: {
+      'List-Unsubscribe':      `<mailto:${replyTo || fromEmail}?subject=unsubscribe>`,
+      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      'X-Entity-Ref-ID':       `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    },
+    // Tag every send so we can pull per-campaign stats back from Brevo later
+    tags: campaignTag ? [campaignTag] : undefined,
+    // No tags or category — avoids Brevo marking as 'marketing' which triggers Gmail Promotions
   };
 
   if (attachment && attachment.data && attachment.filename) {
@@ -759,7 +728,7 @@ async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress, blastL
       break;
     }
 
-    const leads = await Lead.find(filter).select('email name firstName company').skip(skip).limit(BATCH).lean();
+    const leads = await Lead.find(filter).select('_id email name firstName company').skip(skip).limit(BATCH).lean();
     if (leads.length === 0) break;
     skip += leads.length;
 
@@ -781,7 +750,7 @@ async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress, blastL
         const html    = personalise(campaign.body,    { name: pName, company, email: lead.email });
         const subj    = personalise(campaign.subject, { name: pName, company, email: lead.email });
 
-        await sendViaBrevo({ to: lead.email, toName: pName, subject: subj, htmlBody: html, fromEmail, fromName, replyTo: fromEmail, attachment, apiKey: activeAcc.key, companyAddress: cfg.address });
+        await sendViaBrevo({ to: lead.email, toName: pName, subject: subj, htmlBody: html, fromEmail, fromName, replyTo: fromEmail, attachment, apiKey: activeAcc.key, companyAddress: cfg.address, campaignTag: `camp-${campaign._id}` });
 
         sent++;
         successfullySentEmails.push(lead.email);
@@ -809,6 +778,13 @@ async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress, blastL
           reason,
           retryStatus: 'pending',
         });
+
+        // Mark the lead as not_sent so it shows in the Leads → Not Sent filter
+        await Lead.findByIdAndUpdate(lead._id, {
+          status:         'not_sent',
+          lastBlastError: reason.slice(0, 300),
+          lastBlastAt:    new Date(),
+        }).catch(() => {});
 
         if (reason.includes('429') || /quota|daily.limit|plan.limit/i.test(reason)) {
           pool.markExhausted();
