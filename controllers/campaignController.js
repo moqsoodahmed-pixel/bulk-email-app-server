@@ -224,26 +224,24 @@ async function sendViaBrevo({ to, toName, subject, htmlBody, fromEmail, fromName
   const unsubLine = `\n\n---\nTo unsubscribe reply with "unsubscribe" or email ${fromEmail}\n${companyAddress || ''}`;
   const plainWithFooter = plain + unsubLine;
 
-  // Plain-text style HTML — no background colours, no banners, no large headers.
-  // These are the signals Gmail uses to route into Promotions. Minimal HTML = Primary inbox.
+  // Render as a plain personal email — no containers, no styling, no borders.
+  // Looks identical to what a person would type in Gmail. This is the #1 signal for Primary inbox.
   const lines = plain.split('\n');
   const bodyHtml = lines.map((line) => {
     if (line.trim() === '') return '<br>';
     const escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return `<p style="margin:0 0 6px 0;padding:0">${escaped}</p>`;
+    return `<p style="margin:0 0 8px 0">${escaped}</p>`;
   }).join('\n');
-  const unsubUrl = `mailto:${replyTo || fromEmail}?subject=unsubscribe`;
+  const unsubUrl = `mailto:${replyTo || fromEmail}?subject=Unsubscribe&body=Please remove me from your list`;
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#ffffff;font-family:Arial,Helvetica,sans-serif;color:#222222">
-<div style="max-width:600px;margin:0 auto;padding:24px 20px">
-  <div style="font-size:14px;line-height:1.8;color:#222222">${bodyHtml}</div>
-  <div style="margin-top:32px;padding-top:16px;border-top:1px solid #eeeeee;font-size:11px;color:#999999">
-    ${companyAddress || ''}<br>
-    <a href="${unsubUrl}" style="color:#999999;text-decoration:underline">Unsubscribe</a>
-  </div>
-</div>
+<body style="margin:0;padding:16px;font-family:Arial,sans-serif;font-size:14px;line-height:1.7;color:#000000">
+${bodyHtml}
+<p style="margin:24px 0 0 0;font-size:11px;color:#999999">
+  ${companyAddress || ''} &nbsp;|&nbsp;
+  <a href="${unsubUrl}" style="color:#999999">Unsubscribe</a>
+</p>
 </body>
 </html>`;
 
