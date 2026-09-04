@@ -56,14 +56,27 @@ class BrevoPool {
     }
   }
 
-  // Factory: fetches live quota for every key so we start with real numbers
-  static async create(apiKeys) {
+  // Factory: fetches live quota AND verifies sender for every key.
+  // Accounts where the sender is not verified are marked exhausted so they
+  // are never used — prevents Brevo falling back to @brevosend.com domain.
+  static async create(apiKeys, fromEmail) {
     const accounts = await Promise.all(
       apiKeys.map(async (key, i) => {
         const quota = await fetchQuota(key);
         const remaining = quota ? quota.remaining : 300;
-        const exhausted = remaining <= 0;
-        console.log(`[pool] Account ${i + 1}: ${remaining} emails remaining (live from Brevo)`);
+        const quotaOk   = remaining > 0;
+
+        // Check sender verification if fromEmail provided
+        let senderOk = true;
+        if (fromEmail) {
+          senderOk = await checkSenderVerified(key, fromEmail);
+          if (!senderOk) {
+            console.warn(`[pool] Account ${i + 1}: sender "${fromEmail}" NOT verified — skipping this account to prevent brevosend.com fallback`);
+          }
+        }
+
+        const exhausted = !quotaOk || !senderOk;
+        console.log(`[pool] Account ${i + 1}: ${remaining} remaining, sender verified: ${senderOk} → ${exhausted ? 'SKIPPED' : 'OK'}`);
         return { key, index: i + 1, remaining, exhausted };
       })
     );
@@ -128,6 +141,21 @@ async function fetchQuota(apiKey) {
     if (plan) return { total: plan.credits, used: plan.creditsUsed || 0, remaining: plan.credits - (plan.creditsUsed || 0) };
     return null;
   } catch { return null; }
+}
+
+// Checks that fromEmail is an active verified sender in this Brevo account.
+// Returns false if not found or not active — prevents brevosend.com fallback.
+async function checkSenderVerified(apiKey, fromEmail) {
+  try {
+    const res  = await fetch('https://api.brevo.com/v3/senders', {
+      headers: { 'api-key': apiKey, 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) return false;
+    const body    = await res.json().catch(() => ({}));
+    const senders = body.senders || [];
+    const match   = senders.find((s) => s.email?.toLowerCase() === fromEmail.toLowerCase());
+    return !!(match && match.active !== false);
+  } catch { return false; }
 }
 
 // ---------------------------------------------------------------------------
@@ -556,8 +584,8 @@ export async function testSend(req, res) {
   let attachment = null;
   if (req.file) attachment = { filename: req.file.originalname, mimeType: req.file.mimetype, data: req.file.buffer.toString('base64') };
 
-  // Build pool with live quotas so we pick the right account
-  const pool = await BrevoPool.create(keys);
+  // Build pool with live quotas AND sender verification — skips accounts where sender not verified
+  const pool = await BrevoPool.create(keys, fromEmail);
   const acc  = pool.firstAvailable();
 
   if (!acc) {
@@ -672,8 +700,8 @@ async function sendEmails(campaign, filter, cfg, apiKeys, companyAddress, blastL
   const fromName   = campaign.fromName || cfg.fromName();
   const attachment = campaign.attachment?.data && campaign.attachment?.filename ? campaign.attachment : null;
 
-  // Build pool with LIVE quota from Brevo — skips exhausted accounts automatically
-  const pool = await BrevoPool.create(apiKeys);
+  // Build pool with LIVE quota from Brevo AND sender verification — skips unverified accounts
+  const pool = await BrevoPool.create(apiKeys, fromEmail);
   const totalLiveRemaining = pool.accounts.reduce((s, a) => s + a.remaining, 0);
   console.log(`[campaign] "${campaign.name}" — ${pool.totalAccounts} account(s), ${totalLiveRemaining} emails actually available (live from Brevo)`);
 
@@ -812,8 +840,8 @@ export async function resendViaCampaign(blastLog, campaign, pendingRecipients) {
     return;
   }
 
-  const pool       = await BrevoPool.create(keys);
   const fromEmail  = cfg.fromEmail();
+  const pool       = await BrevoPool.create(keys, fromEmail);
   const fromName   = campaign.fromName || cfg.fromName();
   const attachment = campaign.attachment?.data && campaign.attachment?.filename ? campaign.attachment : null;
 
