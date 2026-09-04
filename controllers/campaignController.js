@@ -66,17 +66,19 @@ class BrevoPool {
         const remaining = quota ? quota.remaining : 300;
         const quotaOk   = remaining > 0;
 
-        // Check sender verification if fromEmail provided
-        let senderOk = true;
+        // Warn if sender not verified — but do NOT mark exhausted.
+        // Brevo rejects the send with a 4xx if the sender is truly missing;
+        // that error surfaces in the catch block. Blocking here caused all
+        // accounts to appear exhausted even when quota was available.
         if (fromEmail) {
-          senderOk = await checkSenderVerified(key, fromEmail);
+          const senderOk = await checkSenderVerified(key, fromEmail);
           if (!senderOk) {
-            console.warn(`[pool] Account ${i + 1}: sender "${fromEmail}" NOT verified — skipping this account to prevent brevosend.com fallback`);
+            console.warn(`[pool] Account ${i + 1}: sender "${fromEmail}" not found in sender list — will attempt anyway; Brevo will reject if truly unverified.`);
           }
         }
 
-        const exhausted = !quotaOk || !senderOk;
-        console.log(`[pool] Account ${i + 1}: ${remaining} remaining, sender verified: ${senderOk} → ${exhausted ? 'SKIPPED' : 'OK'}`);
+        const exhausted = !quotaOk; // only quota determines availability
+        console.log(`[pool] Account ${i + 1}: ${remaining} remaining → ${exhausted ? 'SKIPPED (no quota)' : 'OK'}`);
         return { key, index: i + 1, remaining, exhausted };
       })
     );
