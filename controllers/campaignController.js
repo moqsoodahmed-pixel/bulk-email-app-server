@@ -56,27 +56,29 @@ class BrevoPool {
     }
   }
 
-  // Factory: fetches live quota AND verifies sender for every key.
-  // Accounts where the sender is not verified are marked exhausted so they
-  // are never used — prevents Brevo falling back to @brevosend.com domain.
+  // Factory: fetches live quota for every key so we start with real numbers.
+  // Also checks sender verification — logs a warning if not verified but does NOT
+  // block the account (blocking caused false "0 remaining" errors when sender
+  // verification was pending in Brevo).
   static async create(apiKeys, fromEmail) {
     const accounts = await Promise.all(
       apiKeys.map(async (key, i) => {
-        const quota = await fetchQuota(key);
+        const quota     = await fetchQuota(key);
         const remaining = quota ? quota.remaining : 300;
-        const quotaOk   = remaining > 0;
+        const exhausted = remaining <= 0;
 
-        // Check sender verification if fromEmail provided
-        let senderOk = true;
-        if (fromEmail) {
-          senderOk = await checkSenderVerified(key, fromEmail);
-          if (!senderOk) {
-            console.warn(`[pool] Account ${i + 1}: sender "${fromEmail}" NOT verified — skipping this account to prevent brevosend.com fallback`);
+        // Warn if sender not yet verified — but still use the account
+        if (fromEmail && !exhausted) {
+          const verified = await checkSenderVerified(key, fromEmail);
+          if (!verified) {
+            console.warn(`[pool] Account ${i + 1}: sender "${fromEmail}" not yet verified in Brevo — emails may use brevosend.com until verified. Add sender in Brevo → Senders & IPs → Senders.`);
+          } else {
+            console.log(`[pool] Account ${i + 1}: ${remaining} remaining, sender verified ✅`);
           }
+        } else {
+          console.log(`[pool] Account ${i + 1}: ${remaining} remaining (live from Brevo)`);
         }
 
-        const exhausted = !quotaOk || !senderOk;
-        console.log(`[pool] Account ${i + 1}: ${remaining} remaining, sender verified: ${senderOk} → ${exhausted ? 'SKIPPED' : 'OK'}`);
         return { key, index: i + 1, remaining, exhausted };
       })
     );
