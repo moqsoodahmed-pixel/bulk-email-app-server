@@ -33,6 +33,7 @@ const COMPANY_CONFIG = {
     // 1 Brevo account = 300 emails/month
     apiKeys: () => [
       process.env.OR_BREVO_KEY_1,
+      process.env.OR_BREVO_KEY_2, // 2nd Brevo account → 600 emails/month total
     ].filter((k) => k && k.length > 10 && !k.includes('YOUR_')),
   },
 };
