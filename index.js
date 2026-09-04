@@ -25,12 +25,29 @@ app.set('trust proxy', 1);
 app.use(helmet());
 app.use(
   cors({
-    origin: [
-      'https://bulk-email-app-client.pages.dev',
-      'https://d245ddfe.bulk-email-app-client.pages.dev',
-      'http://localhost:5173',
-      process.env.FRONTEND_URL,
-    ].filter(Boolean),
+    origin: (origin, callback) => {
+      // Allow requests with no origin (curl, Postman, server-to-server)
+      if (!origin) return callback(null, true);
+
+      const allowed = [
+        // Production CF Pages domain
+        'https://bulk-email-app-client.pages.dev',
+        // localhost dev
+        'http://localhost:5173',
+        // Explicit override from .env (e.g. c5831fe3.bulk-email-app-client.pages.dev)
+        process.env.FRONTEND_URL,
+      ].filter(Boolean);
+
+      // Also allow ANY Cloudflare Pages preview deployment for this project
+      // Pattern: https://<hash>.bulk-email-app-client.pages.dev
+      const isCFPreview = /^https:\/\/[a-z0-9]+\.bulk-email-app-client\.pages\.dev$/.test(origin);
+
+      if (isCFPreview || allowed.includes(origin)) {
+        return callback(null, true);
+      }
+      console.warn('[cors] Blocked origin:', origin);
+      return callback(new Error(`CORS: origin not allowed — ${origin}`));
+    },
     credentials: true,
   })
 );
