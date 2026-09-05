@@ -56,30 +56,34 @@ class BrevoPool {
     }
   }
 
-  // Factory: fetches live quota for every key so we start with real numbers.
-  // Also checks sender verification — logs a warning if not verified but does NOT
-  // block the account (blocking caused false "0 remaining" errors when sender
-  // verification was pending in Brevo).
+  // Factory: fetches live quota AND verifies sender for every key.
+  // Accounts where sender is unverified are SKIPPED — prevents brevosend.com fallback.
   static async create(apiKeys, fromEmail) {
     const accounts = await Promise.all(
       apiKeys.map(async (key, i) => {
         const quota     = await fetchQuota(key);
         const remaining = quota ? quota.remaining : 300;
-        const exhausted = remaining <= 0;
+        const quotaExhausted = remaining <= 0;
 
-        // Warn if sender not yet verified — but still use the account
-        if (fromEmail && !exhausted) {
-          const verified = await checkSenderVerified(key, fromEmail);
-          if (!verified) {
-            console.warn(`[pool] Account ${i + 1}: sender "${fromEmail}" not yet verified in Brevo — emails may use brevosend.com until verified. Add sender in Brevo → Senders & IPs → Senders.`);
-          } else {
-            console.log(`[pool] Account ${i + 1}: ${remaining} remaining, sender verified ✅`);
-          }
-        } else {
-          console.log(`[pool] Account ${i + 1}: ${remaining} remaining (live from Brevo)`);
+        // Check sender verification
+        let senderVerified = true;
+        if (fromEmail) {
+          senderVerified = await checkSenderVerified(key, fromEmail);
         }
 
-        return { key, index: i + 1, remaining, exhausted };
+        // Skip account if quota is 0 OR sender not verified
+        // Unverified sender = Brevo falls back to @brevosend.com which Gmail distrusts
+        const exhausted = quotaExhausted || !senderVerified;
+
+        if (!senderVerified && !quotaExhausted) {
+          console.warn(`[pool] Account ${i + 1}: SKIPPED — sender "${fromEmail}" not verified in Brevo. Go to Account ${i + 1} Brevo → Settings → Senders & IPs → Senders → Add "${fromEmail}"`);
+        } else if (exhausted && quotaExhausted) {
+          console.log(`[pool] Account ${i + 1}: 0 remaining (exhausted)`);
+        } else {
+          console.log(`[pool] Account ${i + 1}: ${remaining} remaining, sender verified ✅`);
+        }
+
+        return { key, index: i + 1, remaining: quotaExhausted ? 0 : remaining, exhausted };
       })
     );
     return new BrevoPool(accounts);
