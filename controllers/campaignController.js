@@ -291,7 +291,6 @@ ${bodyHtml}
       'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
       'X-Entity-Ref-ID':       `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     },
-    // Tag every send so we can pull per-campaign stats back from Brevo later
     tags: campaignTag ? [campaignTag] : undefined,
     // No tags or category — avoids Brevo marking as 'marketing' which triggers Gmail Promotions
   };
