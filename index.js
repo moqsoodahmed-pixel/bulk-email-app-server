@@ -11,6 +11,7 @@ import leadRoutes    from './routes/leadRoutes.js';
 import campaignRoutes from './routes/campaignRoutes.js';
 import logRoutes     from './routes/logRoutes.js';
 import statsRoutes   from './routes/statsRoutes.js';
+import exportRoutes  from './routes/exportRoutes.js';
 
 const REQUIRED_ENV = ['MONGO_URI', 'JWT_SECRET'];
 for (const key of REQUIRED_ENV) {
@@ -45,6 +46,7 @@ app.use('/api/leads',     leadRoutes);
 app.use('/api/campaigns', campaignRoutes);
 app.use('/api/logs',      logRoutes);
 app.use('/api/stats',     statsRoutes);
+app.use('/api/export',    exportRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

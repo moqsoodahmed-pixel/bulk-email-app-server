@@ -42,6 +42,11 @@ const leadSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// TTL index: MongoDB auto-deletes leads where expireAt is set and has passed.
+// Only leads explicitly scheduled for deletion will be removed.
+// Active unsent leads are NOT deleted automatically.
+leadSchema.index({ expireAt: 1 }, { expireAfterSeconds: 0, sparse: true });
+
 leadSchema.index({ email: 'text', name: 'text', company: 'text' });
 
 export default mongoose.model('Lead', leadSchema);
