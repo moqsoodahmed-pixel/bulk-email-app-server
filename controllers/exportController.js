@@ -118,7 +118,7 @@ export async function archiveLeads(req, res) {
 // ---------------------------------------------------------------------------
 export async function exportAnalytics(req, res) {
   const company = req.query.company || 'launcherdesk';
-  const days    = Math.min(90, parseInt(req.query.days) || 30);
+  const days    = Math.min(365, parseInt(req.query.days) || 30);
 
   const KEY_MAP = {
     launcherdesk:  [process.env.LD_BREVO_KEY_1, process.env.LD_BREVO_KEY_2, process.env.LD_BREVO_KEY_3],

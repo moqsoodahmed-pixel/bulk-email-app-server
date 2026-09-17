@@ -43,7 +43,7 @@ async function brevoGet(apiKey, path) {
 // ---------------------------------------------------------------------------
 export async function getStats(req, res) {
   const company = req.query.company || 'launcherdesk';
-  const days    = Math.min(90, Math.max(1, parseInt(req.query.days) || 30));
+  const days    = Math.min(365, Math.max(1, parseInt(req.query.days) || 30));
 
   const keysFn = COMPANY_KEYS[company];
   if (!keysFn) return res.status(400).json({ error: 'Unknown company.' });
@@ -126,7 +126,7 @@ export async function getEvents(req, res) {
   const company = req.query.company || 'launcherdesk';
   const limit   = Math.min(200, Math.max(1, parseInt(req.query.limit) || 100));
   const event   = req.query.event || ''; // '' = all events
-  const days    = Math.min(90, Math.max(1, parseInt(req.query.days) || 30));
+  const days    = Math.min(365, Math.max(1, parseInt(req.query.days) || 30));
 
   const keysFn = COMPANY_KEYS[company];
   if (!keysFn) return res.status(400).json({ error: 'Unknown company.' });
